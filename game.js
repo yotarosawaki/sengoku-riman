@@ -289,7 +289,7 @@ function newGame() {
     com: setup.mode === 'com' && side === 1, ai: DIFFS[setup.diff], aiT: 1.5,
     rateMul: setup.mode === 'com' && side === 1 ? DIFFS[setup.diff].rate : 1, sel: null,
   });
-  game = { time: MATCH_TIME, countdown: 3.2, players: [mk(0), mk(1)], units: [], fx: [], over: false, shake: 0, ot: false, t: 0 };
+  game = { time: MATCH_TIME, countdown: 3.2, players: [mk(0), mk(1)], units: [], fx: [], over: false, shake: 0, ot: false, t: 0, hint: [null, null] };
 }
 
 function makeUnit(side, id, lane, dx, dy) {
@@ -567,6 +567,13 @@ function drawField() {
     ctx.fillStyle = '#c9a66b'; rr(ctx, LANES[l] - 22, 50, 44, H - 100, 10); ctx.fill();
     ctx.fillStyle = 'rgba(0,0,0,.06)';
     for (let y = 60; y < H - 60; y += 22) ctx.fillRect(LANES[l] - 14, y, 28, 3);
+  }
+  // スワイプ中のルートを光らせる
+  for (let s = 0; s < 2; s++) {
+    const l = game.hint && game.hint[s];
+    if (l == null) continue;
+    ctx.fillStyle = s === 0 ? 'rgba(90,176,255,.35)' : 'rgba(255,100,100,.35)';
+    rr(ctx, X(LANES[l]) - 24, 48, 48, H - 96, 12); ctx.fill();
   }
   // 堀
   ctx.fillStyle = '#3f8fd1'; ctx.fillRect(0, MID - 13, W, 26);
@@ -853,10 +860,7 @@ function buildPanel(side, elId, rotated) {
   }
   const name = setup.mode === 'pvp' ? TEAM[side].name : 'あなた';
   el.innerHTML = `
-    <div class="p-head"><span class="p-name">${name}</span><span class="p-hint">キャラ → ルートの順にタップ</span><span class="p-hp"></span><span class="p-timer"></span></div>
-    <div class="lanes">
-      <button class="lane" data-i="0">◀ 左</button><button class="lane" data-i="1">▲ 中</button><button class="lane" data-i="2">右 ▶</button>
-    </div>
+    <div class="p-head"><span class="p-name">${name}</span><span class="p-hint">カードを出したいルートへスワイプ</span><span class="p-hp"></span><span class="p-timer"></span></div>
     <div class="cards"></div>
     <div class="gauge"><div class="gfill"></div><div class="gticks"></div><span class="gnum"></span></div>`;
   const cards = el.querySelector('.cards');
@@ -867,17 +871,9 @@ function buildPanel(side, elId, rotated) {
     b.innerHTML = `<span class="cost">${c.cost}</span><span class="cname">${c.name}</span>`;
     b.prepend(charImg(id));
     const ch = document.createElement('span'); ch.className = 'charge'; b.appendChild(ch);
-    b.addEventListener('pointerdown', e => { e.preventDefault(); p.sel = p.sel === i ? null : i; refreshSel(side); });
+    bindCardSwipe(b, side, i, rotated);
     cards.appendChild(b);
     return b;
-  });
-  el.querySelectorAll('.lane').forEach(b => {
-    b.addEventListener('pointerdown', e => {
-      e.preventDefault();
-      const i = +b.dataset.i;
-      const lane = rotated !== viewFlip ? 2 - i : i;   // 向かい側・反転表示なら左右が逆
-      tryDeploy(side, lane);
-    });
   });
   panels[side] = {
     el, cards: cardEls, fill: el.querySelector('.gfill'), gauge: el.querySelector('.gauge'),
@@ -885,6 +881,77 @@ function buildPanel(side, elId, rotated) {
   };
   refreshSel(side);
 }
+/* カードのスワイプ操作
+   ・戦場の上まで引っぱって離す → 離した位置のルートへ
+   ・パネル内で左/上/右に弾く    → その方向のルートへ（自分から見た向き）
+   ・動かさずに離す               → 選択だけ（その後に戦場をタップしても出陣できる） */
+const SWIPE_MIN = 18;
+function bindCardSwipe(b, side, i, rotated) {
+  let drag = null;
+  const laneAt = e => {
+    const dx = e.clientX - drag.x0, dy = e.clientY - drag.y0;
+    if (Math.hypot(dx, dy) < SWIPE_MIN) return null;
+    const r = cv.getBoundingClientRect();
+    if (e.clientX >= r.left && e.clientX <= r.right && e.clientY >= r.top && e.clientY <= r.bottom) {
+      const wx = X((e.clientX - r.left) / r.width * W);          // 戦場の上 → 指の位置のルート
+      let lane = 0, bd = Infinity;
+      LANES.forEach((x, l) => { if (Math.abs(x - wx) < bd) { bd = Math.abs(x - wx); lane = l; } });
+      return lane;
+    }
+    const sx = rotated ? -dx : dx, sy = rotated ? -dy : dy;          // 自分から見た弾いた向き
+    if (sy > 0 && Math.abs(sx) < sy) return null;                    // 下向きはキャンセル
+    const own = Math.abs(sx) > Math.abs(sy) * 0.8 ? (sx < 0 ? 0 : 2) : 1;
+    return rotated !== viewFlip ? 2 - own : own;
+  };
+  b.addEventListener('pointerdown', e => {
+    e.preventDefault();
+    if (!game || game.over) return;
+    try { b.setPointerCapture(e.pointerId); } catch (err) { /* 取れなくても動く */ }
+    drag = { id: e.pointerId, x0: e.clientX, y0: e.clientY, lane: null };
+    game.players[side].sel = i; refreshSel(side);
+  });
+  b.addEventListener('pointermove', e => {
+    if (!drag || e.pointerId !== drag.id) return;
+    drag.lane = laneAt(e);
+    game.hint[side] = drag.lane;
+    showGhost(side, i, e, drag.lane);
+  });
+  const end = (e, cancel) => {
+    if (!drag || e.pointerId !== drag.id) return;
+    const lane = cancel ? null : laneAt(e);
+    const moved = Math.hypot(e.clientX - drag.x0, e.clientY - drag.y0) >= SWIPE_MIN;
+    drag = null;
+    if (game) game.hint[side] = null;
+    hideGhost(side);
+    if (!game) return;
+    if (lane != null) tryDeploy(side, lane);
+    else if (moved) { game.players[side].sel = null; refreshSel(side); }   // 下に弾いた・範囲外 → 取り消し
+  };
+  b.addEventListener('pointerup', e => end(e, false));
+  b.addEventListener('pointercancel', e => end(e, true));
+}
+
+// 指についてくるキャラの絵
+const ghosts = [null, null];
+function showGhost(side, i, e, lane) {
+  let g = ghosts[side];
+  if (!g) {
+    g = ghosts[side] = document.createElement('div');
+    g.className = 'ghost';
+    document.body.appendChild(g);
+  }
+  const id = game.players[side].deck[i];
+  if (g.dataset.id !== id) { g.dataset.id = id; g.innerHTML = ''; g.appendChild(charImg(id)); g.appendChild(document.createElement('span')); }
+  const names = ['左', '中', '右'];
+  const own = lane == null ? null : (setup.mode === 'pvp' && side === 1) !== viewFlip ? 2 - lane : lane;
+  g.lastChild.textContent = own == null ? 'キャンセル' : names[own] + 'ルート';
+  g.classList.toggle('off', lane == null || game.players[side].gauge < CHAR[id].cost);
+  g.classList.toggle('flip', setup.mode === 'pvp' && side === 1);
+  g.style.left = e.clientX + 'px'; g.style.top = e.clientY + 'px';
+  g.style.display = 'block';
+}
+function hideGhost(side) { if (ghosts[side]) ghosts[side].style.display = 'none'; }
+
 function refreshSel(side) {
   const p = game.players[side], pn = panels[side];
   if (!pn || pn.com) return;
@@ -991,7 +1058,7 @@ $('modal-close').onclick = () => $('modal').classList.add('hidden');
 function howto() {
   modal(`<h3>遊び方</h3>
   <p><b>目的：</b>60秒以内に相手の「本丸オフィス城」を破壊！ 時間切れなら城のHPが多い方の勝ち。</p>
-  <p><b>出陣：</b>下のゲージ（予算）が時間でたまります。<b>キャラのカード → ルート（左・中・右）</b>の順にタップ。カードを選んだあと戦場の自陣側をタップしてもOK。</p>
+  <p><b>出陣：</b>下のゲージ（予算）が時間でたまります。<b>キャラのカードを、出したいルートへスワイプ</b>！ 戦場の上まで引っぱって離すとその位置のルート、パネルの中で左・上・右に弾くとその方向のルートに出陣します。下に弾くと取り消し。</p>
   <p><b>進軍：</b>キャラは選んだルートを自動で進み、敵に出会うと戦闘、誰もいなければ城を攻撃します。城は近づいた敵を火縄銃で迎え撃ちます。</p>
   <p><b>残業タイム：</b>残り20秒でゲージが2倍速！</p>
   <h4>三すくみ（有利なら1.5倍ダメージ）</h4>
