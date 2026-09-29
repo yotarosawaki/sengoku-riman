@@ -46,6 +46,11 @@ button{font-family:inherit;color:inherit;cursor:pointer;border:none}
 #online{align-items:center;justify-content:center;gap:16px;padding:24px 20px;
   background:radial-gradient(circle at 50% 30%,#2b3f78 0,var(--bg) 70%)}
 .on-box{width:100%;max-width:320px;display:flex;flex-direction:column;gap:12px;align-items:center}
+.spinner{width:44px;height:44px;border-radius:50%;border:5px solid rgba(255,255,255,.15);border-top-color:var(--gold);animation:spin 1s linear infinite}
+@keyframes spin{to{transform:rotate(360deg)}}
+.on-track{width:100%;height:12px;border-radius:6px;background:#0d0a1c;border:2px solid #4b3f86;overflow:hidden}
+#on-bar{height:100%;width:0;background:linear-gradient(90deg,#7fd0ff,#2f7de1)}
+.on-limits{width:100%;display:flex;justify-content:space-between;font-size:12px;color:var(--muted)}
 .join{display:flex;gap:8px;width:100%}
 .join input{flex:1;min-width:0;font:inherit;font-size:24px;font-weight:800;text-align:center;letter-spacing:.3em;
   border-radius:14px;border:3px solid #4b3f86;background:#0d0a1c;color:#fff;padding:8px;-webkit-user-select:text;user-select:text}
@@ -153,7 +158,7 @@ button{font-family:inherit;color:inherit;cursor:pointer;border:none}
     </div>
     <button class="btn" id="btn-com">COMと合戦</button>
     <button class="btn red" id="btn-pvp">ふたりで合戦（1台で対面）</button>
-    <button class="btn net" id="btn-net">ネットで合戦（部屋コード）</button>
+    <button class="btn net" id="btn-net">ネットで合戦（だれかと対戦）</button>
     <div class="row2">
       <button class="btn ghost" id="btn-howto">遊び方</button>
       <button class="btn ghost" id="btn-gemini">キャラデザ指示</button>
@@ -188,24 +193,25 @@ button{font-family:inherit;color:inherit;cursor:pointer;border:none}
     </div>
   </section>
 
-  <!-- ネット対戦ロビー -->
+  <!-- ネット対戦 待合室 -->
   <section id="online" class="screen">
-    <div class="logo"><small>ネット対戦</small><h1 style="font-size:32px">部屋コードで<br><span>合戦</span></h1></div>
-    <div id="on-menu" class="on-box">
-      <button class="btn" id="on-create">部屋を作る</button>
-      <div class="note">または、相手から聞いた部屋コードを入力</div>
-      <div class="join">
-        <input id="on-code" type="text" inputmode="numeric" pattern="[0-9]*" maxlength="4" placeholder="4桁" autocomplete="off">
-        <button class="btn red" id="on-join">入る</button>
-      </div>
+    <div class="logo"><small>ネット対戦</small><h1 style="font-size:34px">待合室</h1></div>
+    <div id="on-searching" class="on-box">
+      <div class="spinner"></div>
+      <div class="res-sub" id="on-msg">対戦相手をさがしています…</div>
+      <div class="note">待ち時間</div>
+      <div class="code" id="on-count">0:00</div>
+      <div class="on-track"><div id="on-bar"></div></div>
+      <div class="on-limits"><span id="on-left">あと 5:00</span><span>最大 5:00</span></div>
+      <button class="btn ghost" id="on-cancel">やめる</button>
     </div>
-    <div id="on-wait" class="on-box hidden">
-      <div class="note">部屋コード</div>
-      <div class="code" id="on-codebox">----</div>
-      <div class="res-sub">このコードを相手に伝えてね<br>相手の参加を待っています…</div>
+    <div id="on-timeout" class="on-box hidden">
+      <div class="res-big" style="font-size:24px">5分待っても<br>相手が見つかりませんでした</div>
+      <button class="btn" id="on-retry">もう一度さがす</button>
+      <button class="btn red" id="on-com">COMと合戦する</button>
+      <button class="btn ghost" id="on-back">タイトルへ</button>
     </div>
     <div id="on-status" class="on-status"></div>
-    <button class="btn ghost" id="on-back" style="max-width:320px">戻る</button>
   </section>
 
   <!-- バトル -->

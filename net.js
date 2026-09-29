@@ -4,6 +4,7 @@
    ・部屋を作った人（ホスト）＝P1 が試合を計算し、状態を0.1秒ごとに送る
    ・参加した人（ゲスト）＝P2 は「どのキャラをどのルートに出すか」だけを送る
    データ構造： rooms/{4桁コード} = { host, guest, created, decks:{0,1}, snap, cmds, left }
+              lobby/{4桁コード} = { host, t }（対戦相手を待っている部屋）
    ========================================================= */
 
 const FB_VER = '10.12.2';
@@ -35,92 +36,207 @@ async function netInit() {
   const cred = await firebase.auth().signInAnonymously();
   net.uid = cred.user.uid;
   net.db = firebase.database();
+  try { net.offset = (await net.db.ref('.info/serverTimeOffset').once('value')).val() || 0; } catch (e) { net.offset = 0; }
 }
 function errText(e) {
   const m = String(e && (e.code || e.message) || e);
   if (m === 'NOCONFIG') return 'ネット対戦はまだ準備中です（Firebaseの設定が必要）';
   if (m.includes('admin-restricted') || m.includes('operation-not-allowed')) return 'Firebaseの匿名ログインが有効になっていません';
-  if (m.includes('PERMISSION_DENIED') || m.includes('permission')) return 'Firebaseのルール設定を確認してください';
+  if (m.toLowerCase().includes('permission')) return 'Firebaseのルール設定を確認してください';
   if (m === 'script' || m.includes('network')) return '通信できませんでした。電波の良い所で再度お試しください';
   return '接続エラー：' + m;
 }
 function sub(ref, ev, fn) { ref.on(ev, fn); net.subs.push(() => ref.off(ev, fn)); }
 
-/* ---------- ロビー ---------- */
+/* ---------- 待合室（ランダムマッチ） ----------
+   lobby/{部屋コード} = { host, t }  … 対戦相手を待っている部屋の一覧
+   1) 待っている人がいれば、いちばん古い部屋に入る
+   2) いなければ自分が部屋を作って待合室に登録し、最大5分待つ
+   3) 待っている間も3秒ごとに自分より前から待っている人を探し、見つかればそちらへ合流（同時に入室した2人のすれ違い防止） */
+const MATCH_MAX = 5 * 60 * 1000;
+const SCAN_SEC = 3000;
+let mm = null;   // 待合室の状態 { start, active, tick, scan, myT, busy }
+
+function serverNow() { return Date.now() + (net.offset || 0); }
 function onStatus(t) { $('on-status').textContent = t || ''; }
+function fmt(ms) { const s = Math.max(0, Math.floor(ms / 1000)); return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`; }
+
+function lobbyUI(state) {
+  $('on-searching').classList.toggle('hidden', state !== 'search');
+  $('on-timeout').classList.toggle('hidden', state !== 'timeout');
+}
+
 function openOnline() {
-  $('on-menu').classList.remove('hidden');
-  $('on-wait').classList.add('hidden');
-  onStatus(window.FIREBASE_CONFIG ? '' : 'ネット対戦はまだ準備中です（Firebaseの設定が必要）');
+  onStatus('');
+  $('on-count').textContent = '0:00';
+  $('on-left').textContent = 'あと ' + fmt(MATCH_MAX);
+  $('on-bar').style.width = '0%';
+  $('on-msg').textContent = '対戦相手をさがしています…';
+  lobbyUI('search');
   show('online');
-}
-function lobbyBusy(b) { $('on-create').disabled = b; $('on-join').disabled = b; }
-
-async function createRoom() {
-  lobbyBusy(true); onStatus('部屋を作っています…');
-  try {
-    await netInit();
-    for (let i = 0; i < 10; i++) {
-      const code = String(1000 + Math.floor(Math.random() * 9000));
-      const ref = net.db.ref('rooms/' + code);
-      const now = Date.now();
-      let r;
-      try {
-        r = await ref.transaction(cur =>
-          (cur === null || !cur.host || !cur.created || cur.created < now - ROOM_TTL) ? { host: net.uid, created: now } : undefined);
-      } catch (e) {
-        if (String(e.message || e).includes('ermission')) continue;   // 使用中のコード → 別のコードで再挑戦
-        throw e;
-      }
-      if (!r.committed) continue;
-      Object.assign(net, { role: 'host', side: 0, code, ref, round: 0, acked: 0 });
-      ref.onDisconnect().remove();
-      $('on-codebox').textContent = code;
-      $('on-menu').classList.add('hidden');
-      $('on-wait').classList.remove('hidden');
-      onStatus('');
-      sub(ref.child('guest'), 'value', s => { if (s.val() && !$('select').classList.contains('show') && !game) enterSelect(); });
-      sub(ref.child('left/1'), 'value', s => { if (s.val()) netAbort('相手が部屋から出ました'); });
-      sub(ref.child('decks'), 'value', s => onDecks(s.val()));
-      sub(ref.child('cmds'), 'child_added', onCmd);
-      return;
-    }
-    onStatus('部屋が混み合っています。もう一度お試しください');
-  } catch (e) { onStatus(errText(e)); }
-  finally { lobbyBusy(false); }
+  startMatch();
 }
 
-async function joinRoom() {
-  const code = $('on-code').value.replace(/\D/g, '');
-  if (code.length !== 4) { onStatus('4桁の部屋コードを入力してね'); return; }
-  lobbyBusy(true); onStatus('部屋に入っています…');
+async function startMatch() {
+  stopMatch();
+  const me = mm = { start: Date.now(), active: true, busy: false };
+  me.tick = setInterval(updateCount, 250);
+  updateCount();
+  lobbyUI('search');
+  onStatus('');
   try {
     await netInit();
+    if (!me.active) return;
+    if (await tryJoinWaiting(null)) return;
+    if (!me.active) return;
+    await createWaitingRoom();
+    me.scan = setInterval(scanWhileWaiting, SCAN_SEC);
+  } catch (e) {
+    onStatus(errText(e));
+    stopMatch(); netCleanup();
+    $('on-msg').textContent = '接続できませんでした';
+  }
+}
+
+function updateCount() {
+  if (!mm || !mm.active) return;
+  const el = Date.now() - mm.start;
+  $('on-count').textContent = fmt(el);
+  $('on-left').textContent = 'あと ' + fmt(MATCH_MAX - el);
+  $('on-bar').style.width = Math.min(100, el / MATCH_MAX * 100) + '%';
+  if (el >= MATCH_MAX) matchTimeout();
+}
+
+function stopMatch() {
+  if (!mm) return;
+  mm.active = false;
+  clearInterval(mm.tick); clearInterval(mm.scan);
+  mm = null;
+}
+
+function matchTimeout() {
+  stopMatch();
+  netCleanup();
+  lobbyUI('timeout');
+}
+
+function cancelMatch() {
+  stopMatch();
+  netCleanup();
+  show('title'); drawTriArt();
+}
+
+async function findWaiting() {
+  const s = await net.db.ref('lobby').orderByChild('t').limitToFirst(10).get();
+  const list = [];
+  s.forEach(c => { const v = c.val(); if (v) list.push({ code: c.key, host: v.host, t: v.t }); });
+  const now = serverNow();
+  return list.filter(e => e.host !== net.uid && e.t > now - MATCH_MAX);
+}
+
+// 待っている部屋に入る。olderThan を指定すると、それより前から待っている部屋だけが対象
+async function tryJoinWaiting(olderThan) {
+  let list = await findWaiting();
+  if (olderThan) list = list.filter(e => e.t < olderThan.t || (e.t === olderThan.t && e.code < olderThan.code));
+  for (const e of list) {
+    if (!mm || !mm.active) return true;
+    if (await joinCode(e.code)) return true;
+  }
+  return false;
+}
+
+async function joinCode(code) {
+  const ref = net.db.ref('rooms/' + code);
+  const v = (await ref.get()).val();
+  if (!v || !v.host || v.guest || v.host === net.uid) return false;
+  let r;
+  try { r = await ref.child('guest').transaction(cur => cur === null ? net.uid : undefined); }
+  catch (e) { return false; }
+  if (!r.committed || r.snapshot.val() !== net.uid) return false;
+  const v2 = (await ref.get()).val();
+  if (!v2 || !v2.host) { ref.remove().catch(() => {}); return false; }   // 相手がちょうど退出していた
+  net.db.ref('lobby/' + code).remove().catch(() => {});
+  Object.assign(net, { role: 'guest', side: 1, code, ref, round: 0, sentN: 0, sent: [] });
+  ref.child('left/1').onDisconnect().set(true);
+  sub(ref.child('host'), 'value', h => { if (!h.val()) netAbort('相手が退出しました'); });
+  sub(ref.child('decks'), 'value', d => onDecks(d.val()));
+  sub(ref.child('snap'), 'value', d => { const t = d.val(); if (t) applySnap(JSON.parse(t)); });
+  onMatched();
+  return true;
+}
+
+async function createWaitingRoom() {
+  for (let i = 0; i < 10; i++) {
+    const code = String(1000 + Math.floor(Math.random() * 9000));
     const ref = net.db.ref('rooms/' + code);
-    const s = await ref.get();
-    const v = s.val();
-    if (!v || !v.host || (v.created || 0) < Date.now() - ROOM_TTL) { onStatus('その部屋は見つかりません'); return; }
-    if (v.guest && v.guest !== net.uid) { onStatus('その部屋はもう満員です'); return; }
-    const r = await ref.child('guest').transaction(cur => (cur === null || cur === net.uid) ? net.uid : undefined);
-    if (!r.committed) { onStatus('その部屋はもう満員です'); return; }
-    Object.assign(net, { role: 'guest', side: 1, code, ref, round: 0, sentN: 0, sent: [] });
-    ref.child('left/1').onDisconnect().set(true);
-    onStatus('');
-    sub(ref.child('host'), 'value', h => { if (!h.val()) netAbort('相手が部屋を閉じました'); });
-    sub(ref.child('decks'), 'value', d => onDecks(d.val()));
-    sub(ref.child('snap'), 'value', d => { const t = d.val(); if (t) applySnap(JSON.parse(t)); });
-    enterSelect();
-  } catch (e) { onStatus(errText(e)); }
-  finally { lobbyBusy(false); }
+    const now = serverNow();
+    let r;
+    try {
+      r = await ref.transaction(cur =>
+        (cur === null || !cur.host || !cur.created || cur.created < now - ROOM_TTL) ? { host: net.uid, created: now } : undefined);
+    } catch (e) {
+      if (String(e.message || e).includes('ermission')) continue;   // 使用中のコード → 別のコードで再挑戦
+      throw e;
+    }
+    if (!r.committed) continue;
+    Object.assign(net, { role: 'host', side: 0, code, ref, round: 0, acked: 0 });
+    ref.onDisconnect().remove();
+    const lref = net.db.ref('lobby/' + code);
+    net.lobbyRef = lref;
+    if (mm) mm.myT = now;
+    await lref.set({ host: net.uid, t: now });
+    lref.onDisconnect().remove();
+    sub(ref.child('guest'), 'value', s => { if (s.val() && net.role === 'host' && mm && mm.active) onMatched(); });
+    sub(ref.child('left/1'), 'value', s => { if (s.val()) netAbort('相手が退出しました'); });
+    sub(ref.child('decks'), 'value', s => onDecks(s.val()));
+    sub(ref.child('cmds'), 'child_added', onCmd);
+    return;
+  }
+  throw new Error('混み合っています。もう一度お試しください');
+}
+
+async function scanWhileWaiting() {
+  const me = mm;
+  if (!me || !me.active || me.busy || net.role !== 'host') return;
+  me.busy = true;
+  try {
+    const mine = { t: me.myT, code: net.code };
+    let older = (await findWaiting()).filter(e => e.code !== mine.code && (e.t < mine.t || (e.t === mine.t && e.code < mine.code)));
+    if (!me.active) return;
+    if (older.length) {
+      // 自分より前から待っている人がいる → 自分の部屋をたたんで合流する
+      await net.lobbyRef.remove();
+      if ((await net.ref.child('guest').get()).val()) { onMatched(); return; }   // その間に誰かが入ってきた
+      netCleanup();
+      if (await tryJoinWaiting(mine)) return;
+      if (me.active) await createWaitingRoom();   // 合流できなかったら待ち直し（経過時間はそのまま）
+    } else if (net.lobbyRef && !(await net.lobbyRef.get()).exists() && !(await net.ref.child('guest').get()).val()) {
+      await net.lobbyRef.set({ host: net.uid, t: me.myT });   // 一覧から消えていたら登録し直す
+    }
+  } catch (e) { /* 次の周期で再試行 */ }
+  finally { me.busy = false; }
+}
+
+function onMatched() {
+  if (!mm) return;
+  stopMatch();
+  if (net.role === 'host' && net.lobbyRef) {
+    net.lobbyRef.onDisconnect().cancel();
+    net.lobbyRef.remove().catch(() => {});
+    net.lobbyRef = null;
+  }
+  $('on-msg').textContent = '対戦相手が見つかりました！';
+  setTimeout(enterSelect, 600);
 }
 
 function enterSelect() {
+  if (!net.role) return;
   setup.mode = 'online';
   openSelect(net.side);
 }
 
 function netSubmitDeck(deck) {
-  $('sel-wait-sub').textContent = '部屋コード ' + net.code;
+  $('sel-wait-sub').textContent = '';
   $('sel-wait').classList.remove('hidden');
   net.ref.child('decks/' + net.side).set(deck).catch(e => onStatus(errText(e)));
 }
@@ -139,7 +255,7 @@ function netStartRound() {
   net.round++;
   net.sentOver = false; net.fxOut = []; net.sendT = 0;
   setup.decks = [net.decks[0].slice(), net.decks[1].slice()];
-  net.ref.child('created').set(Date.now()).catch(() => {});   // 使用中の部屋が期限切れ扱いにならないよう更新
+  net.ref.child('created').set(serverNow()).catch(() => {});   // 使用中の部屋が期限切れ扱いにならないよう更新
   startBattle();
   netTick(0);
 }
@@ -255,6 +371,7 @@ function guestUpdate(dt) {
 /* ---------- 退出 ---------- */
 function netCleanup() {
   net.subs.forEach(f => f()); net.subs = [];
+  if (net.lobbyRef) { net.lobbyRef.onDisconnect().cancel(); net.lobbyRef.remove().catch(() => {}); net.lobbyRef = null; }
   if (net.ref) {
     const ref = net.ref;
     if (net.role === 'host') { ref.onDisconnect().cancel(); ref.remove().catch(() => {}); }
@@ -263,6 +380,7 @@ function netCleanup() {
   Object.assign(net, { role: null, code: null, ref: null, decks: [null, null], round: 0, sent: [], fxOut: [] });
 }
 function netLeave() {
+  stopMatch();
   netCleanup();
   game = null; viewFlip = false; setup.mode = 'com';
   $('sel-wait').classList.add('hidden');
@@ -277,8 +395,8 @@ function netAbort(msg) {
 
 /* ---------- ボタン ---------- */
 $('btn-net').onclick = openOnline;
-$('on-create').onclick = createRoom;
-$('on-join').onclick = joinRoom;
-$('on-code').addEventListener('keydown', e => { if (e.key === 'Enter') joinRoom(); });
-$('on-back').onclick = () => { if (net.role) netLeave(); else show('title'); };
+$('on-cancel').onclick = cancelMatch;
+$('on-retry').onclick = startMatch;
+$('on-com').onclick = () => { setup.mode = 'com'; openSelect(0); };
+$('on-back').onclick = () => { show('title'); drawTriArt(); };
 $('sel-wait-leave').onclick = netLeave;

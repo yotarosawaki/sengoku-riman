@@ -847,7 +847,7 @@ function buildPanel(side, elId, rotated) {
   const remote = setup.mode === 'online' && side !== net.side;
   if (p.com || remote) {
     el.className = `panel p${side} com`;
-    el.innerHTML = `<div class="p-head" style="width:100%"><span class="p-name">${remote ? '相手' : 'COM'}</span><span class="p-hp">${remote ? 'ネット対戦 部屋' + net.code : DIFFS[setup.diff].label}</span><span class="p-timer"></span></div>`;
+    el.innerHTML = `<div class="p-head" style="width:100%"><span class="p-name">${remote ? '相手' : 'COM'}</span><span class="p-hp">${remote ? 'ネット対戦' : DIFFS[setup.diff].label}</span><span class="p-timer"></span></div>`;
     panels[side] = { el, timer: el.querySelector('.p-timer'), com: true };
     return;
   }
