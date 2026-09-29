@@ -41,6 +41,17 @@ button{font-family:inherit;color:inherit;cursor:pointer;border:none}
 .diff{display:flex;gap:6px;max-width:320px;width:100%}
 .diff button{flex:1;padding:8px 0;border-radius:10px;background:rgba(255,255,255,.1);font-size:14px;font-weight:800;color:var(--muted)}
 .diff button.on{background:#fff;color:var(--bg)}
+.btn.net{background:linear-gradient(#7fd0ff,#2f7de1);color:#fff;box-shadow:0 5px 0 #174a94}
+.btn.net:active{box-shadow:0 2px 0 #174a94}
+#online{align-items:center;justify-content:center;gap:16px;padding:24px 20px;
+  background:radial-gradient(circle at 50% 30%,#2b3f78 0,var(--bg) 70%)}
+.on-box{width:100%;max-width:320px;display:flex;flex-direction:column;gap:12px;align-items:center}
+.join{display:flex;gap:8px;width:100%}
+.join input{flex:1;min-width:0;font:inherit;font-size:24px;font-weight:800;text-align:center;letter-spacing:.3em;
+  border-radius:14px;border:3px solid #4b3f86;background:#0d0a1c;color:#fff;padding:8px;-webkit-user-select:text;user-select:text}
+.join .btn{width:auto;flex:none;padding:14px 22px}
+.code{font-size:56px;font-weight:800;letter-spacing:.2em;color:var(--gold);text-shadow:0 4px 0 #7a4b00}
+.on-status{min-height:20px;font-size:13px;color:#ffb3a8;text-align:center;max-width:320px}
 .row2{display:flex;gap:8px;max-width:320px;width:100%}
 .note{font-size:11px;color:var(--muted);text-align:center}
 
@@ -142,6 +153,7 @@ button{font-family:inherit;color:inherit;cursor:pointer;border:none}
     </div>
     <button class="btn" id="btn-com">COMと合戦</button>
     <button class="btn red" id="btn-pvp">ふたりで合戦（1台で対面）</button>
+    <button class="btn net" id="btn-net">ネットで合戦（部屋コード）</button>
     <div class="row2">
       <button class="btn ghost" id="btn-howto">遊び方</button>
       <button class="btn ghost" id="btn-gemini">キャラデザ指示</button>
@@ -169,6 +181,31 @@ button{font-family:inherit;color:inherit;cursor:pointer;border:none}
       <div class="res-sub">端末を相手に渡してね。<br>P2は画面の<b>上側</b>から戦います。</div>
       <button class="btn red" id="handoff-ok">P2のキャラを選ぶ</button>
     </div>
+    <div id="sel-wait" class="overlay hidden">
+      <div class="res-big" style="font-size:26px">相手のキャラ選択を<br>待っています…</div>
+      <div class="res-sub" id="sel-wait-sub"></div>
+      <button class="btn ghost" id="sel-wait-leave" style="max-width:320px">部屋を出る</button>
+    </div>
+  </section>
+
+  <!-- ネット対戦ロビー -->
+  <section id="online" class="screen">
+    <div class="logo"><small>ネット対戦</small><h1 style="font-size:32px">部屋コードで<br><span>合戦</span></h1></div>
+    <div id="on-menu" class="on-box">
+      <button class="btn" id="on-create">部屋を作る</button>
+      <div class="note">または、相手から聞いた部屋コードを入力</div>
+      <div class="join">
+        <input id="on-code" type="text" inputmode="numeric" pattern="[0-9]*" maxlength="4" placeholder="4桁" autocomplete="off">
+        <button class="btn red" id="on-join">入る</button>
+      </div>
+    </div>
+    <div id="on-wait" class="on-box hidden">
+      <div class="note">部屋コード</div>
+      <div class="code" id="on-codebox">----</div>
+      <div class="res-sub">このコードを相手に伝えてね<br>相手の参加を待っています…</div>
+    </div>
+    <div id="on-status" class="on-status"></div>
+    <button class="btn ghost" id="on-back" style="max-width:320px">戻る</button>
   </section>
 
   <!-- バトル -->
@@ -180,6 +217,7 @@ button{font-family:inherit;color:inherit;cursor:pointer;border:none}
       <div class="res-flip" id="res-flip"></div>
       <div class="res-big" id="res-big"></div>
       <div class="res-sub" id="res-sub"></div>
+      <div class="note hidden" id="res-note">部屋を作った人が「もう一度対戦」を押すと始まります</div>
       <button class="btn" id="res-again">同じ編成で再戦</button>
       <button class="btn ghost" id="res-select" style="max-width:320px">キャラを選び直す</button>
       <button class="btn ghost" id="res-title" style="max-width:320px">タイトルへ</button>
@@ -191,6 +229,8 @@ button{font-family:inherit;color:inherit;cursor:pointer;border:none}
   <div class="modal-box"><div id="modal-body"></div><button id="modal-close">閉じる</button></div>
 </div>
 
+<script src="firebase-config.js"></script>
 <script src="game.js"></script>
+<script src="net.js"></script>
 </body>
 </html>

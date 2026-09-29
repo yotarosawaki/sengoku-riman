@@ -1,0 +1,12 @@
+{
+  "rules": {
+    ".read": false,
+    ".write": false,
+    "rooms": {
+      "$code": {
+        ".read": "auth != null",
+        ".write": "auth != null && $code.matches(/^[0-9]{4}$/) && (!data.exists() || data.child('host').val() === auth.uid || data.child('guest').val() === auth.uid || !data.child('created').exists() || data.child('created').val() < now - 1800000 || !data.child('host').exists() || (!data.child('guest').exists() && newData.child('guest').val() === auth.uid && newData.child('host').val() === data.child('host').val()))"
+      }
+    }
+  }
+}

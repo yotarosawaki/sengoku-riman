@@ -507,7 +507,10 @@ function comThink(side, dt) {
 }
 
 /* ---------- エフェクト ---------- */
-function addFx(f) { f.t = 0; game.fx.push(f); }
+function addFx(f) {
+  f.t = 0; game.fx.push(f);
+  if (typeof net !== 'undefined' && net.role === 'host') netFx(f);   // ネット対戦：相手にも送る
+}
 function updateFx(dt) {
   for (const f of game.fx) f.t += dt;
   game.fx = game.fx.filter(f => f.t < f.life);
@@ -517,6 +520,10 @@ function updateFx(dt) {
 const cv = document.getElementById('cv');
 const ctx = cv.getContext('2d');
 let scale = 1, dpr = 1;
+// ネット対戦でP2側の人は、自分の城が下に来るよう上下左右を反転して表示する
+let viewFlip = false;
+const X = x => viewFlip ? W - x : x;
+const Y = y => viewFlip ? H - y : y;
 
 function fitCanvas() {
   const wrap = document.getElementById('field-wrap');
@@ -549,8 +556,9 @@ function drawField() {
   const g1 = ctx.createLinearGradient(0, 0, 0, H);
   g1.addColorStop(0, '#6f9a46'); g1.addColorStop(0.5, '#86b24f'); g1.addColorStop(1, '#6f9a46');
   ctx.fillStyle = g1; ctx.fillRect(0, 0, W, H);
-  ctx.fillStyle = 'rgba(226,59,59,.08)'; ctx.fillRect(0, 0, W, MID);
-  ctx.fillStyle = 'rgba(47,125,225,.08)'; ctx.fillRect(0, MID, W, MID);
+  const red = 'rgba(226,59,59,.08)', blue = 'rgba(47,125,225,.08)';
+  ctx.fillStyle = viewFlip ? blue : red; ctx.fillRect(0, 0, W, MID);
+  ctx.fillStyle = viewFlip ? red : blue; ctx.fillRect(0, MID, W, MID);
   // 芝の模様
   ctx.fillStyle = 'rgba(255,255,255,.05)';
   for (let i = 0; i < 14; i++) ctx.fillRect(0, i * 40, W, 20);
@@ -581,13 +589,14 @@ function drawField() {
 
 function drawBase(side) {
   const p = game.players[side];
-  const front = BASE_FRONT[side];
-  const top = side === 0 ? front : 0, bot = side === 0 ? H : front;
+  const bottom = (side === 0) !== viewFlip;
+  const front = bottom ? H - 62 : 62;
+  const top = bottom ? front : 0, bot = bottom ? H : front;
   // 石垣
   ctx.fillStyle = '#8d8a84'; ctx.fillRect(0, top, W, bot - top);
   ctx.strokeStyle = 'rgba(0,0,0,.2)'; ctx.lineWidth = 1;
   for (let y = top; y < bot; y += 10) for (let x = ((y / 10) % 2) * 12; x < W; x += 24) ctx.strokeRect(x, y, 24, 10);
-  ctx.fillStyle = TEAM[side].main; ctx.fillRect(0, side === 0 ? front : front - 4, W, 4);
+  ctx.fillStyle = TEAM[side].main; ctx.fillRect(0, bottom ? front : front - 4, W, 4);
   // 本丸オフィス城
   const cy = (top + bot) / 2;
   if (IMG.base) {
@@ -616,7 +625,7 @@ function drawBase(side) {
     ctx.fillStyle = '#fff'; ctx.font = 'bold 18px sans-serif'; ctx.textAlign = 'center'; ctx.fillText('落城…', 180, cy + 6);
   }
   // HPバー
-  const bw = 150, bx = 180 - bw / 2, by = side === 0 ? H - 12 : 3;
+  const bw = 150, bx = 180 - bw / 2, by = bottom ? H - 12 : 3;
   ctx.fillStyle = 'rgba(0,0,0,.6)'; rr(ctx, bx - 2, by - 1, bw + 4, 10, 4); ctx.fill();
   ctx.fillStyle = TEAM[side].main; rr(ctx, bx, by, bw * p.baseHp / BASE_HP, 8, 3); ctx.fill();
   ctx.fillStyle = '#fff'; ctx.font = 'bold 8px sans-serif'; ctx.textAlign = 'center';
@@ -626,31 +635,31 @@ function drawBase(side) {
 function drawUnit(u) {
   const c = u.c;
   if (c.building) return drawTower(u);
-  const s = c.size;
-  const lunge = u.atkAnim > 0 ? DIR[u.side] * 3 : 0;
+  const s = c.size, ux = X(u.x), uy = Y(u.y);
+  const lunge = u.atkAnim > 0 ? DIR[u.side] * (viewFlip ? -3 : 3) : 0;
   const bob = u.moving ? -Math.abs(Math.sin(u.t * 10)) * 2 : 0;
   const fly = c.flying ? -16 + Math.sin(u.t * 4) * 2 : 0;
   // 影と足元リング
-  ctx.fillStyle = 'rgba(0,0,0,.25)'; ctx.beginPath(); ctx.ellipse(u.x, u.y, s * .32, s * .1, 0, 0, 7); ctx.fill();
+  ctx.fillStyle = 'rgba(0,0,0,.25)'; ctx.beginPath(); ctx.ellipse(ux, uy, s * .32, s * .1, 0, 0, 7); ctx.fill();
   ctx.strokeStyle = TEAM[u.side].main; ctx.lineWidth = 2;
-  ctx.beginPath(); ctx.ellipse(u.x, u.y, s * .34, s * .12, 0, 0, 7); ctx.stroke();
-  const fy = u.y + lunge + bob + fly;
+  ctx.beginPath(); ctx.ellipse(ux, uy, s * .34, s * .12, 0, 0, 7); ctx.stroke();
+  const fy = uy + lunge + bob + fly;
   if (IMG[u.id]) {
-    ctx.drawImage(IMG[u.id], u.x - s * .6, fy - s * 1.15, s * 1.2, s * 1.2);
-    ctx.fillStyle = TEAM[u.side].main; rr(ctx, u.x + s * .3, fy - s * 1.1, 7, 9, 2); ctx.fill();
+    ctx.drawImage(IMG[u.id], ux - s * .6, fy - s * 1.15, s * 1.2, s * 1.2);
+    ctx.fillStyle = TEAM[u.side].main; rr(ctx, ux + s * .3, fy - s * 1.1, 7, 9, 2); ctx.fill();
   } else {
-    drawSD(ctx, c, u.x, fy, s, u.side, u.t);
+    drawSD(ctx, c, ux, fy, s, u.side, u.t);
   }
-  if (u.flash > 0) { ctx.fillStyle = 'rgba(255,255,255,.55)'; circle(ctx, u.x, fy - s * .55, s * .4); ctx.fill(); }
+  if (u.flash > 0) { ctx.fillStyle = 'rgba(255,255,255,.55)'; circle(ctx, ux, fy - s * .55, s * .4); ctx.fill(); }
   if (u.stun > 0) {
     ctx.fillStyle = '#ffe14d'; ctx.font = 'bold 10px sans-serif'; ctx.textAlign = 'center';
-    ctx.fillText('★拘束★', u.x, fy - s * 1.2);
+    ctx.fillText('★拘束★', ux, fy - s * 1.2);
   }
-  hpBar(u.x, fy - s * 1.05 - 6, 26, u.hp / u.maxHp, u.side);
+  hpBar(ux, fy - s * 1.05 - 6, 26, u.hp / u.maxHp, u.side);
 }
 
 function drawTower(u) {
-  const x = u.x, y = u.y;
+  const x = X(u.x), y = Y(u.y);
   ctx.fillStyle = 'rgba(0,0,0,.25)'; ctx.beginPath(); ctx.ellipse(x, y, 20, 6, 0, 0, 7); ctx.fill();
   if (IMG.tower) ctx.drawImage(IMG.tower, x - 24, y - 46, 48, 48);
   else {
@@ -674,7 +683,8 @@ function hpBar(x, y, w, r, side) {
 }
 
 function drawFx() {
-  for (const f of game.fx) {
+  for (const f0 of game.fx) {
+    const f = viewFlip ? { ...f0, x: X(f0.x), y: Y(f0.y), x2: X(f0.x2), y2: Y(f0.y2) } : f0;
     const k = f.t / f.life;
     ctx.globalAlpha = 1 - k;
     switch (f.type) {
@@ -734,6 +744,8 @@ function drawOverlayText() {
       ctx.save(); ctx.translate(W / 2, MID - 70); ctx.rotate(Math.PI);
       ctx.font = 'bold 15px sans-serif'; ctx.fillStyle = '#fff'; ctx.fillText('P2 はこちら側から出陣', 0, 0); ctx.restore();
       ctx.font = 'bold 15px sans-serif'; ctx.fillStyle = '#fff'; ctx.fillText('P1 はこちら側から出陣', W / 2, MID + 80);
+    } else if (setup.mode === 'online') {
+      ctx.font = 'bold 15px sans-serif'; ctx.fillStyle = '#fff'; ctx.fillText(`あなたは下側（${net.side === 0 ? '青' : '赤'}い旗）から出陣`, W / 2, MID + 80);
     }
   }
 }
@@ -779,8 +791,8 @@ function drawTriArt() {
 let picks = [];
 function openSelect(side) {
   setup.picking = side;
-  picks = loadDeck(side);
-  const who = setup.mode === 'com' ? 'あなた' : TEAM[side].name;
+  picks = loadDeck(setup.mode === 'online' ? 0 : side);
+  const who = setup.mode === 'pvp' ? TEAM[side].name : 'あなた';
   $('sel-title').innerHTML = `<span class="who" style="background:${TEAM[side].main}">${who}</span>3キャラを選べ！`;
   renderGrid();
   show('select');
@@ -828,17 +840,18 @@ function saveDeck(side, d) { try { localStorage.setItem('sengoku-deck-' + side, 
 
 /* バトル画面のパネル */
 const panels = [null, null];
-function buildPanel(side) {
-  const el = $('panel' + side);
+function buildPanel(side, elId, rotated) {
+  const el = $(elId);
   const p = game.players[side];
-  el.className = `panel ${side === 0 ? 'bottom' : 'top'} p${side}`;
-  if (p.com) {
-    el.className = `panel p1 com`;
-    el.innerHTML = `<div class="p-head" style="width:100%"><span class="p-name">COM</span><span class="p-hp">${DIFFS[setup.diff].label}</span><span class="p-timer"></span></div>`;
+  el.className = `panel ${rotated ? 'top' : 'bottom'} p${side}`;
+  const remote = setup.mode === 'online' && side !== net.side;
+  if (p.com || remote) {
+    el.className = `panel p${side} com`;
+    el.innerHTML = `<div class="p-head" style="width:100%"><span class="p-name">${remote ? '相手' : 'COM'}</span><span class="p-hp">${remote ? 'ネット対戦 部屋' + net.code : DIFFS[setup.diff].label}</span><span class="p-timer"></span></div>`;
     panels[side] = { el, timer: el.querySelector('.p-timer'), com: true };
     return;
   }
-  const name = setup.mode === 'com' ? 'あなた' : TEAM[side].name;
+  const name = setup.mode === 'pvp' ? TEAM[side].name : 'あなた';
   el.innerHTML = `
     <div class="p-head"><span class="p-name">${name}</span><span class="p-hint">キャラ → ルートの順にタップ</span><span class="p-hp"></span><span class="p-timer"></span></div>
     <div class="lanes">
@@ -862,7 +875,7 @@ function buildPanel(side) {
     b.addEventListener('pointerdown', e => {
       e.preventDefault();
       const i = +b.dataset.i;
-      const lane = side === 0 ? i : 2 - i;      // P2は向かい側なので左右反転
+      const lane = rotated !== viewFlip ? 2 - i : i;   // 向かい側・反転表示なら左右が逆
       tryDeploy(side, lane);
     });
   });
@@ -882,7 +895,8 @@ function tryDeploy(side, lane) {
   const p = game.players[side];
   if (p.sel == null) { banner('先にキャラを選んでね'); return; }
   const id = p.deck[p.sel];
-  if (deploy(side, id, lane)) { p.sel = null; refreshSel(side); }
+  const ok = net.role === 'guest' ? netRequestDeploy(id, lane) : deploy(side, id, lane);
+  if (ok) { p.sel = null; refreshSel(side); }
   else {
     const b = panels[side].cards[p.sel];
     b.classList.remove('bump'); void b.offsetWidth; b.classList.add('bump');
@@ -915,19 +929,31 @@ cv.addEventListener('pointerdown', e => {
   if (!game || game.over) return;
   const r = cv.getBoundingClientRect();
   const lx = (e.clientX - r.left) / r.width * W, ly = (e.clientY - r.top) / r.height * H;
-  const side = ly > MID ? 0 : 1;
-  if (game.players[side].com) return;
+  const bottomSide = viewFlip ? 1 : 0;
+  const side = ly > MID ? bottomSide : 1 - bottomSide;
+  if (game.players[side].com || (setup.mode === 'online' && side !== net.side)) return;
   if (game.players[side].sel == null) return;
+  const wx = X(lx);
   let lane = 0, bd = Infinity;
-  LANES.forEach((x, i) => { if (Math.abs(x - lx) < bd) { bd = Math.abs(x - lx); lane = i; } });
+  LANES.forEach((x, i) => { if (Math.abs(x - wx) < bd) { bd = Math.abs(x - wx); lane = i; } });
   tryDeploy(side, lane);
 });
 
 function startBattle() {
   newGame();
   $('result').classList.add('hidden');
-  $('panel1').style.display = '';
-  buildPanel(0); buildPanel(1);
+  $('sel-wait').classList.add('hidden');
+  const online = setup.mode === 'online';
+  const me = online ? net.side : 0;
+  viewFlip = me === 1;
+  buildPanel(me, 'panel0', false);
+  buildPanel(1 - me, 'panel1', !online && setup.mode === 'pvp');
+  const host = net.role === 'host';
+  $('res-again').classList.toggle('hidden', online && !host);
+  $('res-again').textContent = online ? 'もう一度対戦' : '同じ編成で再戦';
+  $('res-select').classList.toggle('hidden', online);
+  $('res-title').textContent = online ? '部屋を出る' : 'タイトルへ';
+  $('res-note').classList.toggle('hidden', !(online && !host));
   show('battle');
 }
 
@@ -942,7 +968,9 @@ function endGame() {
   else w = a.baseHp > b.baseHp ? 0 : b.baseHp > a.baseHp ? 1 : -1;
   const ko = a.baseHp <= 0 || b.baseHp <= 0;
   let big, flip = '';
-  if (setup.mode === 'com') big = w === 0 ? '勝利！天下統一' : w === 1 ? '敗北…左遷です' : '引き分け（定時退社）';
+  const me = setup.mode === 'online' ? net.side : 0;
+  const label = s => setup.mode === 'pvp' ? TEAM[s].name : s === me ? 'あなた' : setup.mode === 'com' ? 'COM' : '相手';
+  if (setup.mode !== 'pvp') big = w === me ? '勝利！天下統一' : w === -1 ? '引き分け（定時退社）' : '敗北…左遷です';
   else {
     big = w === 0 ? 'P1の勝利！' : w === 1 ? 'P1の敗北…' : '引き分け';
     flip = w === 1 ? 'P2の勝利！' : w === 0 ? 'P2の敗北…' : '引き分け';
@@ -951,7 +979,7 @@ function endGame() {
   $('res-flip').textContent = flip;
   $('res-flip').classList.toggle('hidden', !flip);
   $('res-sub').innerHTML = (ko ? '拠点破壊による決着！' : '時間切れ：拠点の残りHPで判定') +
-    `<br>${setup.mode === 'com' ? 'あなた' : 'P1'} ${Math.ceil(a.baseHp)} ／ ${setup.mode === 'com' ? 'COM' : 'P2'} ${Math.ceil(b.baseHp)}`;
+    `<br>${label(me)} ${Math.ceil(g.players[me].baseHp)} ／ ${label(1 - me)} ${Math.ceil(g.players[1 - me].baseHp)}`;
   setTimeout(() => $('result').classList.remove('hidden'), 900);
   banner(ko ? '落城！' : 'そこまで！');
 }
@@ -1013,33 +1041,52 @@ $('btn-com').onclick = () => { setup.mode = 'com'; openSelect(0); };
 $('btn-pvp').onclick = () => { setup.mode = 'pvp'; openSelect(0); };
 $('btn-howto').onclick = howto;
 $('btn-gemini').onclick = geminiGuide;
-$('sel-back').onclick = () => { $('handoff').classList.add('hidden'); show('title'); };
+$('sel-back').onclick = () => { $('handoff').classList.add('hidden'); if (setup.mode === 'online') netLeave(); else show('title'); };
 $('sel-rand').onclick = () => { picks = randomDeck(); renderGrid(); };
 $('sel-ok').onclick = () => {
   if (picks.length !== 3) return;
   const side = setup.picking;
   setup.decks[side] = picks.slice();
-  saveDeck(side, picks);
-  if (setup.mode === 'com') { setup.decks[1] = randomDeck(); startBattle(); }
+  saveDeck(setup.mode === 'online' ? 0 : side, picks);
+  if (setup.mode === 'online') netSubmitDeck(picks.slice());
+  else if (setup.mode === 'com') { setup.decks[1] = randomDeck(); startBattle(); }
   else if (side === 0) { $('handoff').classList.remove('hidden'); }
   else startBattle();
 };
 $('handoff-ok').onclick = () => { $('handoff').classList.add('hidden'); openSelect(1); };
-$('res-again').onclick = () => { if (setup.mode === 'com') setup.decks[1] = randomDeck(); startBattle(); };
+$('res-again').onclick = () => {
+  if (setup.mode === 'online') { netStartRound(); return; }
+  if (setup.mode === 'com') setup.decks[1] = randomDeck();
+  startBattle();
+};
 $('res-select').onclick = () => openSelect(0);
-$('res-title').onclick = () => { game = null; show('title'); drawTriArt(); };
+$('res-title').onclick = () => { if (setup.mode === 'online') { netLeave(); return; } game = null; viewFlip = false; show('title'); drawTriArt(); };
 
 window.addEventListener('resize', () => { if ($('battle').classList.contains('show')) fitCanvas(); });
 document.addEventListener('contextmenu', e => e.preventDefault());
 
 /* ---------- メインループ ---------- */
-let last = performance.now();
-function frame(now) {
-  const dt = Math.min(0.05, (now - last) / 1000);
-  last = now;
-  if (game && $('battle').classList.contains('show')) { update(dt); render(); updateHUD(); }
+// 試合の進行は実時間ベース。画面描画が止まる裏タブでもタイマーで進み、戻ったら追いつく
+let simLast = performance.now();
+function simStep() {
+  const now = performance.now();
+  let el = Math.min(1.5, (now - simLast) / 1000);
+  simLast = now;
+  if (!game || !$('battle').classList.contains('show')) return;
+  if (net.role === 'guest') { guestUpdate(Math.min(0.1, el)); return; }   // ホストから届く状態を表示するだけ
+  while (el > 0) {
+    const d = Math.min(0.02, el);
+    update(d);
+    if (net.role === 'host') netTick(d);
+    el -= d;
+  }
+}
+function frame() {
+  simStep();
+  if (game && $('battle').classList.contains('show')) { render(); updateHUD(); }
   requestAnimationFrame(frame);
 }
+setInterval(() => { if (document.hidden) simStep(); }, 50);
 
 makeIcons();
 loadImages();
